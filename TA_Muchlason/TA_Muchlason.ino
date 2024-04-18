@@ -8,8 +8,8 @@
 RTC_DS3231 rtc;
 // char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-char nama_wifi[] = "HL_Antrian";
-char password_wifi[] = "37123662";
+char nama_wifi[] = "Valerie";
+char password_wifi[] = "ve12345678";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -39,8 +39,8 @@ char text[SERIAL_LEN];
 
 #define LED_BUILTIN         2
 
-#define RELAY_ON            LOW
-#define RELAY_OFF           HIGH
+#define RELAY_ON            HIGH
+#define RELAY_OFF           LOW
 
 #define RELAY_1_PIN         14
 
@@ -61,9 +61,9 @@ typedef struct{
 }STATUS_TypeDef;
 STATUS_TypeDef status;
 
-#define LED_TIME_MQTT       100
-#define LED_TIME_CONNECTED  1000
-#define LED_TIME_DISCONNECT 2000
+#define LED_TIME_MQTT           100
+#define LED_TIME_CONNECTED      1000
+#define LED_TIME_DISCONNECT     2000
 
 #define TIMEOUT_RECONNECT       60000
 #define TIMEOUT_CHART           900000
@@ -80,8 +80,6 @@ typedef struct{
 }TIMEOUT_TypeDef;
 TIMEOUT_TypeDef timeout;
 
-#define VOLT_PANEL_CHARGE       10.0
-#define VOLT_PANEL_DISCHARGE    8.0
 typedef struct{
     float v_bat;
     float i_bat;
