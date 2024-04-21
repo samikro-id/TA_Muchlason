@@ -1,6 +1,6 @@
 #include <WiFi.h>
 #include "mqtt_secrets.h"
-#include "PubSubClient.h"                   // Install Library by Nick O'Leary version 2.7.0
+#include "PubSubClient.h"                   // Install Library by Nick O'Leary version 2.8.0
 #include "ADS1X15.h"                        // Install Library by Rob Tillaart version 0.3.9
 // Date and time functions using a DS3231 RTC connected via I2C and Wire lib
 #include "RTClib.h"
@@ -24,12 +24,13 @@ PubSubClient client(espClient);
 #define MQTT_QOS        0
 #define MQTT_RETAIN     false
 
-#define MQTT2_BROKER    "mqtt3.thingspeak.com"      
+#define MQTT2_BROKER    "mqtt3.thingspeak.com"
 #define MQTT2_PORT      1883                       
 #define MQTT2_TIMEOUT   50
 #define MQTT2_QOS       0
 #define MQTT2_RETAIN    false
-#define CHANNEL_ID      2506798
+// #define CHANNEL_ID      2506798
+#define CHANNEL_ID      2516558
 
 #define MQTT_LEN  100
 String mqtt_payload;
@@ -55,44 +56,67 @@ typedef struct{
     bool connection;
     bool mqtt;
     bool led;
-    bool charge;
     bool pompa;
     bool chart;
 }STATUS_TypeDef;
 STATUS_TypeDef status;
 
-#define LED_TIME_MQTT           100
+#define LED_TIME_MQTT           200
 #define LED_TIME_CONNECTED      1000
 #define LED_TIME_DISCONNECT     2000
 
 #define TIMEOUT_RECONNECT       60000
 #define TIMEOUT_CHART           900000
 #define TIMEOUT_UPDATE          1000
-#define TIMEOUT_UPDATE_CHARGE   180000
 #define TIMEOUT_SENSOR          100
 typedef struct{
     uint32_t led;
     uint32_t connection;
     uint32_t chart;
     uint32_t update;
-    uint32_t update_charge;
     uint32_t update_sensor;
 }TIMEOUT_TypeDef;
 TIMEOUT_TypeDef timeout;
 
 typedef struct{
+    uint8_t sensor;
+    uint8_t schedule;
+}INDEX_TypeDef;
+INDEX_TypeDef counter;
+
+typedef struct{
+    uint8_t hour;
+    uint8_t minute;
+}TIME_TypeDef;
+
+#define EEPROM_ADDRESS			0x57 	//defines the base address of the EEPROM
+
+typedef struct{
+    uint8_t number;
+    TIME_TypeDef on;
+    TIME_TypeDef off;
+}SCHEDULE_TypeDef;
+
+#define BATTERY_ENERGY      87.5
+#define BATTERY_FULL        13.65
+typedef struct{
     float v_bat;
     float i_bat;
+    float p_bat;
+    float e_bat;
     float v_panel;
     float i_panel;
+    float i_load;
+    float p_load;
+    float e_load;
+    TIME_TypeDef time;
 }DATA_TypeDef;
 DATA_TypeDef data;
-
-uint8_t sensor_n = 0;
 
 void setup(){
     delay(3000);
     Serial.begin(115200);
+    Wire.begin();
 
     if (! rtc.begin()) {
         Serial.println("Couldn't find RTC");
@@ -128,7 +152,10 @@ void setup(){
     timeout.update = millis();
     timeout.chart = millis() - TIMEOUT_CHART;
 
+    data.e_bat = BATTERY_ENERGY / 2;
     Serial.println("Init");
+
+    client.setBufferSize(1024);
 }
 
 void loop(){
@@ -140,8 +167,12 @@ void loop(){
 
         status.connection = client.loop();
         if(status.connection){
-            processData();
-            publishChart();
+            if(status.chart){
+                publishChart();
+            }
+            else{
+                processData();
+            }            
         }
         else{
             status.connection = mqttConnect();
@@ -160,34 +191,68 @@ void loop(){
         timeout.update = millis();
 
         DateTime now = rtc.now();
+        data.time.hour = now.hour();
+        data.time.minute = now.minute();
 
-        // Serial.print(now.year(), DEC);
-        // Serial.print('/');
-        // Serial.print(now.month(), DEC);
-        // Serial.print('/');
+        // Serial.print(now.year(), DEC);   Serial.print('/');
+        // Serial.print(now.month(), DEC);  Serial.print('/');
         // Serial.print(now.day(), DEC);
         // Serial.print(" (");
         // Serial.print(daysOfTheWeek[now.dayOfTheWeek()]);
         // Serial.print(") ");
-        // Serial.print(now.hour(), DEC);
-        // Serial.print(':');
-        // Serial.print(now.minute(), DEC);
-        // Serial.print(':');
-        // Serial.print(now.second(), DEC);
-        // Serial.println();
+        // Serial.print(now.hour(), DEC);   Serial.print(':');
+        // Serial.print(now.minute(), DEC); Serial.print(':');
+        // Serial.print(now.second(), DEC); Serial.println();
+
+        float energy = data.p_bat / 3600;
+        data.e_bat += energy;
+        if(data.e_bat > BATTERY_ENERGY) data.e_bat = BATTERY_ENERGY;
+
+        energy = data.p_load / 3600;
+        data.e_load += energy;
+
+        if(data.time.hour == 0 && data.time.minute == 0){
+            data.e_load = 0;
+        }
     }
     else{
         if((millis() - timeout.update_sensor) > TIMEOUT_SENSOR){
-
+            float load;
             ads1.begin(21,22);   ads1.setDataRate(7);
 
-            sensor_n++;
-            switch(sensor_n){
-                case 1: data.v_bat = vBatt(); break;
+            counter.sensor++;
+            switch(counter.sensor){
+                case 1: data.v_bat = vBatt(); 
+                        if(data.v_bat > BATTERY_FULL){
+                            data.e_bat = BATTERY_ENERGY;
+                        }
+                break;
                 case 2: data.v_panel = vPanel(); break;
                 case 3: data.i_bat = iBatt(); break;
                 case 4: data.i_panel = iPanel(); break;
-                default : sensor_n = 0; break;
+                case 5: load = data.i_panel - data.i_bat;
+                        if(load >= 0){
+                            data.i_load = load; 
+                            data.p_load = data.v_bat * data.i_load;
+                        }
+
+                        data.p_bat = data.v_bat * data.i_bat;
+                break;
+                default : counter.sensor = 0; break;
+            }
+
+            counter.schedule ++;
+            if(counter.schedule > 24){
+               counter.schedule = 1;
+            }
+            SCHEDULE_TypeDef schedule = readSchedule(counter.schedule);
+            if(schedule.number > 0){
+                if(schedule.on.hour == data.time.hour && schedule.on.minute == data.time.minute){
+                    pompaOn();
+                }
+                else if(schedule.off.hour == data.time.hour && schedule.off.minute == data.time.minute){
+                    pompaOff();
+                }
             }
 
             timeout.update_sensor = millis();
@@ -198,13 +263,77 @@ void loop(){
 void processData(){
     if(status.mqtt){
         Serial.println(mqtt_payload);
+        uint8_t pos[100];
+		    uint8_t pos_total;
 
-        int index = mqtt_payload.indexOf("|");
+        pos_total = findChar(mqtt_payload, "^", pos);
 
-        if(mqtt_payload.substring(0, index) == "GET"){
-            index++;
-            if(mqtt_payload.substring(index) == "DATA"){
-                publishData();
+        if(pos_total){
+            String split = mqtt_payload.substring(0, pos[0]);
+
+            if(split == "GET"){
+                split = mqtt_payload.substring(pos[0] + 1);
+
+                if(split == "DATA"){
+                    publishData();
+                }
+                else if(split == "SCHEDULE"){
+                    publishSchedule();
+                }
+            }
+            else if(split == "SET"){
+                split = mqtt_payload.substring(pos[0] + 1, pos[1]);
+                if(split == "RELAY"){
+                    split = mqtt_payload.substring(pos[1] + 1);
+                    if(split == "1"){
+                        pompaOn();
+                    }
+                    else{
+                        pompaOff();
+                    }
+
+                    publishData();
+                }
+                // SET^TIME^2024^04^20^08^30^00
+                else if(split == "TIME"){
+                    if(pos_total > 6){
+                        long year = mqtt_payload.substring(pos[1] + 1, pos[2]).toInt();
+                        long month = mqtt_payload.substring(pos[2] + 1, pos[3]).toInt();
+                        long date = mqtt_payload.substring(pos[3] + 1, pos[4]).toInt();
+                        long hour = mqtt_payload.substring(pos[4] + 1, pos[5]).toInt();
+                        long minute = mqtt_payload.substring(pos[5] + 1, pos[6]).toInt();
+                        long second = mqtt_payload.substring(pos[6] + 1).toInt();
+
+                        rtc.adjust(DateTime(year, month, date, hour, minute, second));
+
+                        DateTime now = rtc.now();
+                        data.time.hour = now.hour();
+                        data.time.minute = now.minute();
+
+                        publishData();
+                    }
+                }
+                // SET^SCHEDULE^10^04^20^08^30
+                else if(split == "SCHEDULE"){
+                    if(pos_total > 5){
+                        long number = mqtt_payload.substring(pos[1] + 1, pos[2]).toInt();
+                        long on_hour = mqtt_payload.substring(pos[2] + 1, pos[3]).toInt();
+                        long on_minute = mqtt_payload.substring(pos[3] + 1, pos[4]).toInt();
+                        long off_hour = mqtt_payload.substring(pos[4] + 1, pos[5]).toInt();
+                        long off_minute = mqtt_payload.substring(pos[5] + 1).toInt();
+
+                        SCHEDULE_TypeDef sch;
+                        sch.number = number;
+                        sch.on.hour = on_hour;
+                        sch.on.minute = on_minute;
+                        sch.off.hour = off_hour;
+                        sch.off.minute = off_minute;
+
+                        writeSchedule(sch);
+
+                        publishSchedule();
+                    }
+                }
             }
         }
 
@@ -215,9 +344,21 @@ void processData(){
 }
 
 void publishData(){
-    /* DATA|pompa|vbat|ibat|vpanel|ipanel*/
-    sprintf(text, "DATA|%d|%0.2f|%0.2f|%0.2f|%0.2f", 
-                status.pompa, data.v_bat, data.i_bat, data.v_panel, data.i_panel);
+    /* DATA^hour^minute^vbat^ibat^vpanel^ipanel^iload^pload^pompa*/
+    sprintf(text, "DATA^%d^%d^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%d", 
+                data.time.hour, data.time.minute, data.v_bat, data.i_bat, data.e_bat, data.v_panel, data.i_panel, data.p_load, data.e_load, status.pompa);
+
+    mqttPublish(text);
+}
+
+void publishSchedule(){
+    sprintf(text, "SCHEDULE");
+    for(uint8_t i=1; i<= 24; i++){
+        SCHEDULE_TypeDef sch = readSchedule(i);
+        if(sch.number){
+            sprintf(&text[strlen(text)], "^%d|%d|%d|%d|%d", sch.number, sch.on.hour, sch.on.minute, sch.off.hour, sch.off.minute);
+        }
+    }
 
     mqttPublish(text);
 }
@@ -232,24 +373,22 @@ void checkChart(){
 }
 
 void publishChart(){
-    if(status.chart){
-        sprintf(text,"field1=%.3f&field2=%.3f&field3=%.3f&field4=%.3f&field5=%.3f&field6=%.3f&field7=%.3f&status=MQTTPUBLISH",  
-                data.v_bat, data.i_bat, 0,
-                data.v_panel, data.i_panel,
-                0, 0);
-        // Serial.println(text);
+    sprintf(text,"field1=%.2f&field2=%.2f&field3=%.2f&field4=%.2f&field5=%.2f&field6=%.2f&field7=%d&field8=%.2f&status=MQTTPUBLISH",  
+            data.v_bat, data.i_bat, data.e_bat,
+            data.v_panel, data.i_panel,
+            data.e_load, status.pompa, data.p_load);
+    // Serial.println(text);
 
-        char topic[50];
-        sprintf(topic,"channels/%d/publish", CHANNEL_ID);
-        
-        if(!client.publish(topic,text,false)){
-            Serial.println("fail");
-        };
+    char topic[50];
+    sprintf(topic,"channels/%d/publish", CHANNEL_ID);
+    
+    if(!client.publish(topic,text,false)){
+        Serial.println("fail");
+    };
 
-        client.loop();
-        client.disconnect();
-        status.chart = false;
-    }
+    client.loop();
+    client.disconnect();
+    status.chart = false;
 }
 
 /***** MQTT Handle *******/
@@ -315,9 +454,67 @@ void wifiReconnect(){
     }
 };
 
-/***** Voltage And Current Setting ****/
+/***** Schedule Storage *****/
+SCHEDULE_TypeDef readSchedule(uint8_t number){
+    SCHEDULE_TypeDef sch;
+    sch.number = number;
+    if(sch.number == 0){
+        return sch;
+    }
+
+    uint16_t addr = (number - 1) * 4;
+
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write(highByte(addr));
+    Wire.write(lowByte(addr));
+    Wire.endTransmission();
+
+    Wire.requestFrom(EEPROM_ADDRESS, 4);
+
+    sch.on.hour = Wire.read();
+    sch.on.minute = Wire.read();
+    sch.off.hour = Wire.read();
+    sch.off.minute = Wire.read();
+
+    if( sch.on.hour > 23 || sch.on.minute > 59 || 
+        sch.off.hour > 23 || sch.off.minute > 59
+    ){
+        sch.number = 0;
+    }
+
+    return sch;
+}
+
+void writeSchedule(SCHEDULE_TypeDef sch){
+    if(sch.number == 0){
+        return;
+    }
+
+    Serial.println(sch.number);
+    uint16_t addr = (sch.number - 1) * 4;
+
+    for(uint8_t i=0; i<4; i++){
+        Wire.beginTransmission(EEPROM_ADDRESS);
+        Wire.write(highByte(addr + i));
+        Wire.write(lowByte(addr + i));
+        
+        Serial.println(addr + i);
+
+        switch(i){
+            case 0: Wire.write(sch.on.hour); break;
+            case 1: Wire.write(sch.on.minute);break;
+            case 2: Wire.write(sch.off.hour); break;
+            case 3: Wire.write(sch.off.minute); break;
+        }
+
+        Wire.endTransmission();
+
+        delay(10);
+    }
+}
+
+/***** Voltage And Current Sensor ****/
 float vBatt(){
-    // Serial.print("VBatt ");
     float vBat = 0.0;
 
     if(ads1.isConnected()){
@@ -327,8 +524,6 @@ float vBatt(){
         vBat = raw * ads1.toVoltage(1) * GAIN_V_BAT;
 
         if(vBat < 0){   vBat = 0;   }
-
-        // Serial.println(vBat);
     }
     else{
         Serial.println("Not Connect");
@@ -337,7 +532,6 @@ float vBatt(){
 }
 
 float iBatt(){
-    // Serial.print("IBatt ");
     float iLoad = 0.0;
 
     if(ads1.isConnected()){
@@ -349,8 +543,6 @@ float iBatt(){
         if(-0.01 < iLoad && iLoad < 0.01){
             iLoad = 0.0;
         }
-
-        // Serial.println(iLoad);
     }
     else{
         Serial.println("Not Connect");
@@ -359,7 +551,6 @@ float iBatt(){
 }
 
 float vPanel(){
-    // Serial.print("VPanel ");
     float vPanel = 0.0;
 
     if(ads1.isConnected()){
@@ -368,11 +559,7 @@ float vPanel(){
         int16_t raw = ads1.readADC(0);
         vPanel = data.v_bat - (raw * ads1.toVoltage(1) * GAIN_V_PANEL);
 
-        // vPanel -= data.v_bat;
-
         if(vPanel < 0){   vPanel = 0;   }
-
-        // Serial.println(vPanel);
     }
     else{
         Serial.println("Not Connect");
@@ -381,7 +568,6 @@ float vPanel(){
 }
 
 float iPanel(){
-    // Serial.print("IPanel ");
     float iPanel = 0.0;
 
     if(ads1.isConnected()){
@@ -393,8 +579,6 @@ float iPanel(){
         if(-0.01 < iPanel && iPanel < 0.01){
             iPanel = 0.0;
         }
-
-        // Serial.println(iPanel);
     }
     else{
         Serial.println("Not Connect");
@@ -445,15 +629,18 @@ void clearDataMqtt(){
     mqtt_payload = "";
 }
 
-int findChar(char * data, char character, int start_index){
-    int n;
-    for(n=start_index; n < strlen(data); n++){
-        if(data[n] == character){
-            break;
-        }
-    }
+uint8_t findChar(String data, char *c, uint8_t *pos){
+	uint8_t index = 0;
+	for(uint16_t i=0; i<data.length(); i++){
+		for(uint16_t x=0; x<strlen(c); x++){
+			if(data[i] == c[x]){
+				pos[index] = i;
+				index++;
+			}
+		}
+	}
 
-    return n;
+	return index;
 }
 
 String charToString(char * data, int start, int end){
