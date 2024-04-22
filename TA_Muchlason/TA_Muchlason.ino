@@ -104,8 +104,11 @@ typedef struct{
     float i_bat;
     float p_bat;
     float e_bat;
+    float e_bat_day;
     float v_panel;
     float i_panel;
+    float p_panel;
+    float e_panel;
     float i_load;
     float p_load;
     float e_load;
@@ -208,11 +211,20 @@ void loop(){
         data.e_bat += energy;
         if(data.e_bat > BATTERY_ENERGY) data.e_bat = BATTERY_ENERGY;
 
+        if(data.p_bat < 0){
+            data.e_bat_day += (energy * -1);
+        }
+
         energy = data.p_load / 3600;
         data.e_load += energy;
 
+        energy = data.p_panel / 3600;
+        data.e_panel += energy;
+
         if(data.time.hour == 0 && data.time.minute == 0){
             data.e_load = 0;
+            data.e_bat_day = 0;
+            data.e_panel = 0;
         }
     }
     else{
@@ -237,6 +249,7 @@ void loop(){
                         }
 
                         data.p_bat = data.v_bat * data.i_bat;
+                        data.p_panel = data.v_panel * data.i_panel;
                 break;
                 default : counter.sensor = 0; break;
             }
@@ -345,8 +358,8 @@ void processData(){
 
 void publishData(){
     /* DATA^hour^minute^vbat^ibat^vpanel^ipanel^iload^pload^pompa*/
-    sprintf(text, "DATA^%d^%d^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%d", 
-                data.time.hour, data.time.minute, data.v_bat, data.i_bat, data.e_bat, data.v_panel, data.i_panel, data.p_load, data.e_load, status.pompa);
+    sprintf(text, "DATA^%d^%d^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%0.2f^%d", 
+                data.time.hour, data.time.minute, data.v_bat, data.i_bat, data.e_bat, data.e_bat_day, data.v_panel, data.i_panel, data.p_panel, data.e_panel, data.p_load, data.e_load, status.pompa);
 
     mqttPublish(text);
 }
@@ -374,9 +387,9 @@ void checkChart(){
 
 void publishChart(){
     sprintf(text,"field1=%.2f&field2=%.2f&field3=%.2f&field4=%.2f&field5=%.2f&field6=%.2f&field7=%d&field8=%.2f&status=MQTTPUBLISH",  
-            data.v_bat, data.i_bat, data.e_bat,
+            data.v_bat, data.i_bat, data.e_bat_day,
             data.v_panel, data.i_panel,
-            data.e_load, status.pompa, data.p_load);
+            data.e_load, status.pompa, data.e_panel);
     // Serial.println(text);
 
     char topic[50];
