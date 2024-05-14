@@ -8,8 +8,8 @@
 RTC_DS3231 rtc;
 // char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-char nama_wifi[] = "Valerie";
-char password_wifi[] = "ve12345678";
+char nama_wifi[] = "Redmi 10 2022";
+char password_wifi[] = "vario150";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
